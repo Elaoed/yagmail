@@ -25,7 +25,7 @@ def prepare_message(user, useralias, addresses, subject, contents, attachments, 
         for a in attachments:
             if not os.path.isfile(a):
                 raise TypeError("'{0}' is not a valid filepath".format(a))
-        contents = attachments if contents is None else contents + attachments
+        contents = attachments if contents is None else contents + [attachments]
 
     has_included_images, content_objects = prepare_contents(contents, encoding)
     msg = MIMEMultipart()
