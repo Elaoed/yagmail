@@ -15,7 +15,7 @@ from yagmail.message import prepare_message
 from yagmail.headers import make_addr_alias_user
 
 
-class SMTPBase:
+class SMTP:
     """ :class:`yagmail.SMTP` is a magic wrapper around
     ``smtplib``'s SMTP connection, and allows messages to be sent."""
 
@@ -32,13 +32,14 @@ class SMTPBase:
         encoding="utf-8",
         oauth2_file=None,
         soft_email_validation=True,
+        dkim=None,
         **kwargs
     ):
         self.log = get_logger()
         self.set_logging()
         self.soft_email_validation = soft_email_validation
         if oauth2_file is not None:
-            oauth2_info = get_oauth2_info(oauth2_file)
+            oauth2_info = get_oauth2_info(oauth2_file, user)
             if user is None:
                 user = oauth2_info["email_address"]
         if smtp_skip_login and user is None:
@@ -62,6 +63,7 @@ class SMTPBase:
         self.num_mail_sent = 0
         self.oauth2_file = oauth2_file
         self.credentials = password if oauth2_file is None else oauth2_info
+        self.dkim = dkim
 
     def __enter__(self):
         return self
@@ -107,6 +109,9 @@ class SMTPBase:
         cc=None,
         bcc=None,
         headers=None,
+        prettify_html=True,
+        message_id=None,
+        group_messages=True,
     ):
         addresses = resolve_addresses(self.user, self.useralias, to, cc, bcc)
 
@@ -123,11 +128,15 @@ class SMTPBase:
             attachments,
             headers,
             self.encoding,
+            prettify_html,
+            message_id,
+            group_messages,
+            self.dkim,
         )
 
         recipients = addresses["recipients"]
-        msg_string = msg.as_string()
-        return recipients, msg_string
+        msg_strings = msg.as_string()
+        return recipients, msg_strings
 
     def send(
         self,
@@ -139,21 +148,34 @@ class SMTPBase:
         bcc=None,
         preview_only=False,
         headers=None,
+        prettify_html=True,
+        message_id=None,
+        group_messages=True,
     ):
         """ Use this to send an email with gmail"""
         self.login()
-        recipients, msg_string = self.prepare_send(
-            to, subject, contents, attachments, cc, bcc, headers
+        recipients, msg_strings = self.prepare_send(
+            to,
+            subject,
+            contents,
+            attachments,
+            cc,
+            bcc,
+            headers,
+            prettify_html,
+            message_id,
+            group_messages,
         )
         if preview_only:
-            return (recipients, msg_string)
-        return self._attempt_send(recipients, msg_string)
+            return recipients, msg_strings
 
-    def _attempt_send(self, recipients, msg_string):
+        return self._attempt_send(recipients, msg_strings)
+
+    def _attempt_send(self, recipients, msg_strings):
         attempts = 0
         while attempts < 3:
             try:
-                result = self.smtp.sendmail(self.user, recipients, msg_string)
+                result = self.smtp.sendmail(self.user, recipients, msg_strings)
                 self.log.info("Message sent to %s", recipients)
                 self.num_mail_sent += 1
                 return result
@@ -161,7 +183,7 @@ class SMTPBase:
                 self.log.error(e)
                 attempts += 1
                 time.sleep(attempts * 3)
-        self.unsent.append((recipients, msg_string))
+        self.unsent.append((recipients, msg_strings))
         return False
 
     def send_unsent(self):
@@ -170,8 +192,8 @@ class SMTPBase:
         Use this function to attempt to send these again
         """
         for i in range(len(self.unsent)):
-            recipients, msg_string = self.unsent.pop(i)
-            self._attempt_send(recipients, msg_string)
+            recipients, msg_strings = self.unsent.pop(i)
+            self._attempt_send(recipients, msg_strings)
 
     def close(self):
         """ Close the connection to the SMTP server """
@@ -180,6 +202,12 @@ class SMTPBase:
             self.smtp.quit()
         except (TypeError, AttributeError, smtplib.SMTPServerDisconnected):
             pass
+
+    def login(self):
+        if self.oauth2_file is not None:
+            self._login_oauth2(self.credentials)
+        else:
+            self._login(self.credentials)
 
     def _login(self, password):
         """
@@ -233,23 +261,3 @@ class SMTPBase:
                 self.close()
         except AttributeError:
             pass
-
-
-class SMTP(SMTPBase):
-    def login(self):
-        if self.oauth2_file is not None:
-            self._login_oauth2(self.credentials)
-        else:
-            self._login(self.credentials)
-
-
-class SMTP_SSL(SMTP):
-    def __init__(self, *args, **kwargs):
-        import warnings
-
-        warnings.warn(
-            "It is now possible to simply use 'SMTP' with smtp_ssl=True",
-            category=DeprecationWarning,
-        )
-        kwargs["smtp_ssl"] = True
-        super(SMTP_SSL, self).__init__(*args, **kwargs)
